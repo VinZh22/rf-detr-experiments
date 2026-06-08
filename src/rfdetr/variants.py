@@ -18,6 +18,7 @@ __all__ = [
     "RFDETRSmall",
     "RFDETRMedium",
     "RFDETRLarge",
+    "RFDETRDinov3Base",
     "RFDETRLargeDeprecated",
     "RFDETRSeg",
     "RFDETRSegPreview",
@@ -34,6 +35,7 @@ from deprecate import deprecated_class
 from rfdetr.config import (
     ModelConfig,
     RFDETRBaseConfig,
+    RFDETRDinov3BaseConfig,
     RFDETRLargeConfig,
     RFDETRLargeDeprecatedConfig,
     RFDETRMediumConfig,
@@ -174,6 +176,17 @@ class RFDETRLarge(RFDETR):
             return RFDETRLargeConfig(**kwargs)
         else:
             return RFDETRLargeDeprecatedConfig(**kwargs)
+
+
+class RFDETRDinov3Base(RFDETR):
+    """Train an RF-DETR model with a windowed DINOv3 ViT-B/16 backbone (prototype).
+
+    Initializes from gated ``facebook/dinov3-vitb16`` weights on first build (requires HF
+    authentication for the gated repo); the detector heads are trained from scratch.
+    """
+
+    size = "rfdetr-dinov3-base"
+    _model_config_class = RFDETRDinov3BaseConfig
 
 
 class RFDETRSeg(RFDETR):

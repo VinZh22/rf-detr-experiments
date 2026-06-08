@@ -13,7 +13,13 @@ import torch
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 
-EncoderName: TypeAlias = Literal["dinov2_windowed_small", "dinov2_windowed_base", "dinov2_registers_windowed_small"]
+EncoderName: TypeAlias = Literal[
+    "dinov2_windowed_small",
+    "dinov2_windowed_base",
+    "dinov2_registers_windowed_small",
+    "dinov3_windowed_small",
+    "dinov3_windowed_base",
+]
 
 
 class PretrainWeightsCompatibilityWarning(UserWarning):
@@ -480,6 +486,33 @@ class RFDETRLargeConfig(ModelConfig):
     # ModelConfig does not define these fields; without them the legacy path
     # picks up populate_args defaults (num_select=100) while the PTL path falls
     # back to TrainConfig.num_select (300), causing a postprocess mismatch.
+    num_queries: int = 300
+    num_select: int = 300
+
+
+class RFDETRDinov3BaseConfig(ModelConfig):
+    """RF-DETR with a windowed DINOv3 ViT-B/16 backbone (prototype).
+
+    DINOv3 weights are gated under Meta's DINOv3 License. ``pretrain_weights=None`` initializes the
+    detector from scratch on top of the DINOv3-pretrained backbone, which is downloaded from the
+    HuggingFace Hub on first build (requires HF authentication for the gated repo).
+    """
+
+    encoder: Literal["dinov3_windowed_base"] = "dinov3_windowed_base"
+    hidden_dim: int = 256
+    dec_layers: int = 4
+    sa_nheads: int = 8
+    ca_nheads: int = 16
+    dec_n_points: int = 2
+    num_windows: int = 2
+    patch_size: int = 16
+    projector_scale: List[Literal["P3", "P4", "P5"]] = ["P4"]
+    out_feature_indexes: List[int] = [3, 6, 9, 12]
+    num_classes: int = 90
+    # RoPE derives positions at runtime; this value is kept only for divisibility bookkeeping.
+    positional_encoding_size: int = 576 // 16
+    pretrain_weights: Optional[str] = None
+    resolution: int = 576  # divisible by patch_size * num_windows = 32
     num_queries: int = 300
     num_select: int = 300
 

@@ -19,6 +19,7 @@ import torch.nn.functional as F  # noqa: N812
 
 from rfdetr.models.backbone.base import BackboneBase
 from rfdetr.models.backbone.dinov2 import DinoV2
+from rfdetr.models.backbone.dinov3 import DinoV3
 from rfdetr.models.backbone.projector import MultiScaleProjector
 from rfdetr.utilities.logger import get_logger
 from rfdetr.utilities.tensors import NestedTensor
@@ -57,9 +58,10 @@ class Backbone(BackboneBase):
         # if "registers" is in the name, then use_registers is set to True, otherwise it is set to False
         # similarly, if "windowed" is in the name, then use_windowed_attn is set to True, otherwise it is set to False
         # the last part of the name should be the size
-        # and the start should be dinov2
+        # and the start should be the backbone family ("dinov2" or "dinov3")
         name_parts = name.split("_")
-        assert name_parts[0] == "dinov2"
+        family = name_parts[0]
+        assert family in ("dinov2", "dinov3"), "backbone name must start with 'dinov2' or 'dinov3'"
         # name_parts[-1]
         use_registers = False
         if "registers" in name_parts:
@@ -70,21 +72,36 @@ class Backbone(BackboneBase):
             use_windowed_attn = True
             name_parts.remove("windowed")
         assert len(name_parts) == 2, (
-            "name should be dinov2, then either registers, windowed, both, or none, then the size"
+            "name should be the family, then either registers, windowed, both, or none, then the size"
         )
-        self.encoder = DinoV2(
-            size=name_parts[-1],
-            out_feature_indexes=out_feature_indexes,
-            shape=target_shape,
-            use_registers=use_registers,
-            use_windowed_attn=use_windowed_attn,
-            gradient_checkpointing=gradient_checkpointing,
-            load_dinov2_weights=load_dinov2_weights,
-            patch_size=patch_size,
-            num_windows=num_windows,
-            positional_encoding_size=positional_encoding_size,
-            drop_path_rate=drop_path,
-        )
+        if family == "dinov3":
+            # DINOv3 always carries register tokens (set in its config) and uses RoPE, so
+            # use_registers / positional_encoding_size do not apply.
+            self.encoder = DinoV3(
+                size=name_parts[-1],
+                out_feature_indexes=out_feature_indexes,
+                shape=target_shape,
+                use_windowed_attn=use_windowed_attn,
+                gradient_checkpointing=gradient_checkpointing,
+                load_dinov3_weights=load_dinov2_weights,
+                patch_size=patch_size,
+                num_windows=num_windows,
+                drop_path_rate=drop_path,
+            )
+        else:
+            self.encoder = DinoV2(
+                size=name_parts[-1],
+                out_feature_indexes=out_feature_indexes,
+                shape=target_shape,
+                use_registers=use_registers,
+                use_windowed_attn=use_windowed_attn,
+                gradient_checkpointing=gradient_checkpointing,
+                load_dinov2_weights=load_dinov2_weights,
+                patch_size=patch_size,
+                num_windows=num_windows,
+                positional_encoding_size=positional_encoding_size,
+                drop_path_rate=drop_path,
+            )
         # build encoder + projector as backbone module
         if freeze_encoder:
             for param in self.encoder.parameters():

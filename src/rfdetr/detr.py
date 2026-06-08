@@ -52,6 +52,7 @@ logger = get_logger()
 # ModelContext and _build_model_context are eagerly imported above (runtime use in get_model).
 _VARIANT_EXPORTS = (
     "RFDETRBase",
+    "RFDETRDinov3Base",
     "RFDETRLarge",
     "RFDETRLargeDeprecated",
     "RFDETRMedium",
@@ -86,6 +87,7 @@ _CHECKPOINT_MODEL_MAP_ENTRIES: tuple[tuple[str, str], ...] = (
     ("medium", "RFDETRMedium"),
     ("small", "RFDETRSmall"),
     ("nano", "RFDETRNano"),
+    ("dinov3-base", "RFDETRDinov3Base"),
     ("base", "RFDETRBase"),
 )
 _CHECKPOINT_PLUS_MODEL_MAP_ENTRIES: tuple[tuple[str, str], ...] = (
