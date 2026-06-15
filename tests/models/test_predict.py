@@ -297,6 +297,146 @@ class TestPredictSourceData:
         assert np.all(detections.data["source_shape"] == np.array([48, 64]))
 
 
+class TestPredictUint8FastPath:
+    """uint8 PIL/NumPy inputs are converted on the inference device and skip range validation.
+
+    The fast path must be numerically equivalent to the previous ``F.to_tensor`` CPU path
+    (uint8 / 255 → resize → normalize), and float/tensor inputs must still be validated.
+    """
+
+    def _make_capture_model(self) -> tuple[_DummyRFDETR, torch.nn.Module]:
+        """Return a dummy model whose inner module records the preprocessed batch tensor."""
+
+        class _CaptureModule(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.captured: torch.Tensor | None = None
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                self.captured = x
+                return x
+
+        model = _DummyRFDETR()
+        capture = _CaptureModule()
+        model.model.model = capture
+        return model, capture
+
+    def test_uint8_numpy_matches_float_path(self) -> None:
+        """uint8 ndarray input must produce the same model input as the equivalent float array."""
+        rng = np.random.default_rng(0)
+        arr = rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8)
+
+        model, capture = self._make_capture_model()
+        model.predict(arr)
+        fast = capture.captured
+
+        model.predict(arr.astype(np.float32) / 255.0)
+        reference = capture.captured
+
+        torch.testing.assert_close(fast, reference, rtol=0, atol=1e-6)
+
+    def test_uint8_pil_matches_float_path(self) -> None:
+        """uint8 PIL input must produce the same model input as the equivalent float array."""
+        rng = np.random.default_rng(1)
+        arr = rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8)
+        img = PIL.Image.fromarray(arr)
+
+        model, capture = self._make_capture_model()
+        model.predict(img)
+        fast = capture.captured
+
+        model.predict(arr.astype(np.float32) / 255.0)
+        reference = capture.captured
+
+        torch.testing.assert_close(fast, reference, rtol=0, atol=1e-6)
+
+    def test_uint8_negative_stride_view_accepted(self) -> None:
+        """Flipped (negative-stride) uint8 views must work — np.array copy precedes from_numpy."""
+        rng = np.random.default_rng(2)
+        arr = rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8)
+        flipped = arr[:, ::-1, :]  # negative stride
+
+        model, capture = self._make_capture_model()
+        model.predict(flipped)
+        fast = capture.captured
+
+        model.predict(np.ascontiguousarray(flipped).astype(np.float32) / 255.0)
+        reference = capture.captured
+
+        torch.testing.assert_close(fast, reference, rtol=0, atol=1e-6)
+
+    def test_uint8_grayscale_raises_channel_mismatch(self) -> None:
+        """2-D uint8 input still raises the channel-count error for a 3-channel model."""
+        arr = np.zeros((48, 64), dtype=np.uint8)
+        model = _DummyRFDETR()
+        with pytest.raises(ValueError, match="3 channels"):
+            model.predict(arr)
+
+    def test_float_array_above_one_still_raises(self) -> None:
+        """Float ndarray inputs keep the [0, 1] range validation."""
+        arr = np.full((48, 64, 3), 1.5, dtype=np.float32)
+        model = _DummyRFDETR()
+        with pytest.raises(ValueError, match="above 1"):
+            model.predict(arr)
+
+    def test_float_array_below_zero_still_raises(self) -> None:
+        """Float ndarray inputs with negative values keep raising."""
+        arr = np.full((48, 64, 3), -0.5, dtype=np.float32)
+        model = _DummyRFDETR()
+        with pytest.raises(ValueError, match="below 0"):
+            model.predict(arr)
+
+    def test_tensor_above_one_still_raises(self) -> None:
+        """Tensor inputs keep the [0, 1] range validation (fused aminmax path)."""
+        tensor = torch.full((3, 48, 64), 1.5)
+        model = _DummyRFDETR()
+        with pytest.raises(ValueError, match="above 1"):
+            model.predict(tensor)
+
+    def test_uint8_source_image_preserved(self) -> None:
+        """The fast path must still attach the original uint8 array as source_image."""
+        rng = np.random.default_rng(3)
+        arr = rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8)
+        model = _DummyRFDETR()
+        detections = model.predict(arr)
+        assert np.array_equal(detections.metadata["source_image"], arr)
+
+    def test_uint8_source_image_does_not_alias_caller_array(self) -> None:
+        """source_image must be a private copy — mutating the input later must not change it."""
+        arr = np.full((48, 64, 3), 7, dtype=np.uint8)
+        model = _DummyRFDETR()
+        detections = model.predict(arr)
+        arr[:] = 0
+        assert detections.metadata["source_image"][0, 0, 0] == 7
+
+    def test_tensor_with_nan_and_out_of_range_still_raises(self) -> None:
+        """NaN pixels must not mask genuine out-of-range values (aminmax propagates NaN)."""
+        tensor = torch.full((3, 48, 64), 2.0)
+        tensor[0, 0, 0] = float("nan")
+        model = _DummyRFDETR()
+        with pytest.raises(ValueError, match="above 1"):
+            model.predict(tensor)
+
+    def test_tensor_with_nan_only_passes_validation(self) -> None:
+        """NaN pixels alone never raised under the old elementwise checks — preserve that."""
+        tensor = torch.full((3, 48, 64), 0.5)
+        tensor[0, 0, 0] = float("nan")
+        model = _DummyRFDETR()
+        model.predict(tensor)  # must not raise
+
+    def test_uint8_fast_path_respects_default_dtype(self) -> None:
+        """to_tensor converts uint8 to torch.get_default_dtype(); the fast path must match."""
+        rng = np.random.default_rng(4)
+        arr = rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8)
+        model, capture = self._make_capture_model()
+        torch.set_default_dtype(torch.float64)
+        try:
+            model.predict(arr)
+        finally:
+            torch.set_default_dtype(torch.float32)
+        assert capture.captured.dtype == torch.float64
+
+
 class TestPredictShape:
     """Verify that ``predict(shape=...)`` controls the resize target.
 

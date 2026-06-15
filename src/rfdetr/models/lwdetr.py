@@ -493,6 +493,7 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
             use_varifocal_loss=args.use_varifocal_loss,
             use_position_supervised_loss=args.use_position_supervised_loss,
             ia_bce_loss=args.ia_bce_loss,
+            mal_loss=args.mal_loss,
             mask_point_sample_ratio=args.mask_point_sample_ratio,
         )
     else:
@@ -507,6 +508,7 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
             use_varifocal_loss=args.use_varifocal_loss,
             use_position_supervised_loss=args.use_position_supervised_loss,
             ia_bce_loss=args.ia_bce_loss,
+            mal_loss=args.mal_loss,
         )
     criterion.to(device)
     postprocess = PostProcess(num_select=args.num_select)

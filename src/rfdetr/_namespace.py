@@ -34,6 +34,7 @@ _MC_NAMESPACE_FIELDS = {
     "ia_bce_loss",
     "layer_norm",
     "lite_refpoint_refine",
+    "mal_loss",
     "mask_downsample_ratio",
     "num_channels",
     "num_classes",

@@ -57,6 +57,7 @@ class BuilderArgs(Protocol):
     gradient_checkpointing: bool
     positional_encoding_size: int
     ia_bce_loss: bool
+    mal_loss: bool
     cls_loss_coef: float
     segmentation_head: bool
     mask_downsample_ratio: int

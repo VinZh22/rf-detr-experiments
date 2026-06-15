@@ -21,6 +21,7 @@ from rfdetr.config import ModelConfig, TrainConfig
 from rfdetr.datasets.coco import compute_multi_scale_scales
 from rfdetr.models.lwdetr import build_criterion_from_config, build_model_from_config
 from rfdetr.models.weights import apply_lora, interpolate_position_embeddings, load_pretrain_weights
+from rfdetr.training.muon import Muon
 from rfdetr.training.param_groups import get_param_dict
 from rfdetr.utilities.logger import get_logger
 
@@ -231,14 +232,71 @@ class RFDETRModelModule(LightningModule):
             False
         """
         return (
-            self.model_config.fused_optimizer
+            self.train_config.optimizer == "adamw"
+            and self.model_config.fused_optimizer
             and torch.cuda.is_available()
             and torch.cuda.is_bf16_supported()
             and str(self.trainer.precision) in {"bf16-mixed", "bf16", "bf16-true"}
         )
 
+    @staticmethod
+    def _is_muon_param(name: str, param: torch.Tensor) -> bool:
+        """Return whether a parameter should be optimized by Muon rather than AdamW.
+
+        Muon's Newton-Schulz orthogonalization is only defined for weight matrices, so it governs the
+        2D hidden weights of the backbone and decoder (attention/MLP linears). Embeddings, positional
+        tables, the class/bbox output heads, and all 1D parameters (biases, norms, gains) fall back to
+        AdamW — the standard hybrid-Muon recipe.
+
+        Args:
+            name: Fully-qualified parameter name from ``named_parameters()``.
+            param: The parameter tensor.
+
+        Returns:
+            ``True`` when the parameter is a Muon-eligible hidden weight matrix.
+        """
+        if param.ndim != 2:
+            return False
+        lname = name.lower()
+        # "embed" also matches patch_embed/pos_embed/query_embed/class_embed/bbox_embed heads.
+        adamw_markers = ("embed", "token", "rel_pos", "reference_point", "enc_out", "norm", "bias")
+        return not any(marker in lname for marker in adamw_markers)
+
+    def _build_muon_optimizer(self, param_dicts: list, model_for_params: torch.nn.Module) -> Muon:
+        """Tag each layer-wise-decay param group for the Muon or AdamW branch and build the optimizer.
+
+        Preserves the per-parameter learning rates from :func:`get_param_dict` (so layer-wise decay and
+        the external LR scheduler are unchanged) and only adds a ``use_muon`` flag per group based on
+        :meth:`_is_muon_param`.
+
+        Args:
+            param_dicts: Per-parameter group dicts from :func:`get_param_dict`.
+            model_for_params: The (uncompiled) module whose names disambiguate each parameter.
+
+        Returns:
+            A configured :class:`~rfdetr.training.muon.Muon` optimizer.
+        """
+        tc = self.train_config
+        id_to_name = {id(p): n for n, p in model_for_params.named_parameters()}
+        for group in param_dicts:
+            param = group["params"]
+            name = id_to_name.get(id(param), "")
+            group["use_muon"] = self._is_muon_param(name, param)
+        num_muon = sum(1 for g in param_dicts if g["use_muon"])
+        logger.info(
+            "Muon optimizer: %d/%d param groups on Muon (2D hidden weights), rest on AdamW.",
+            num_muon,
+            len(param_dicts),
+        )
+        return Muon(
+            param_dicts,
+            lr=tc.lr,
+            weight_decay=tc.weight_decay,
+            momentum=tc.muon_momentum,
+        )
+
     def configure_optimizers(self) -> Dict[str, Any]:
-        """Build AdamW optimizer with layer-wise LR decay and LambdaLR scheduler.
+        """Build the optimizer (AdamW or Muon) with layer-wise LR decay and a LambdaLR scheduler.
 
         Uses ``trainer.estimated_stepping_batches`` for total step count so cosine annealing covers the full training
         run regardless of dataset size or accumulation settings.
@@ -255,12 +313,15 @@ class RFDETRModelModule(LightningModule):
         model_for_params = getattr(self.model, "_orig_mod", self.model)
         param_dicts = get_param_dict(ns, model_for_params)
         param_dicts = [p for p in param_dicts if p["params"].requires_grad]
-        optimizer = torch.optim.AdamW(
-            param_dicts,
-            lr=tc.lr,
-            weight_decay=tc.weight_decay,
-            fused=self._use_fused_optimizer,
-        )
+        if tc.optimizer == "muon":
+            optimizer = self._build_muon_optimizer(param_dicts, model_for_params)
+        else:
+            optimizer = torch.optim.AdamW(
+                param_dicts,
+                lr=tc.lr,
+                weight_decay=tc.weight_decay,
+                fused=self._use_fused_optimizer,
+            )
 
         total_steps = int(self.trainer.estimated_stepping_batches)
         steps_per_epoch = max(1, total_steps // tc.epochs)

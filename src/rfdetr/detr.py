@@ -1261,6 +1261,12 @@ class RFDETR:
             position — so ``class_id=18`` yields ``"dog"``, not ``class_names[18]``. For fine-tuned models, ``class_id``
             is a 0-based index into ``class_names``.
 
+        Note:
+            ``uint8`` PIL/NumPy inputs take a fast path: the raw bytes are transferred to the
+            inference device and the ``/ 255`` scaling happens there, so the ``[0, 1]`` range
+            validation is skipped (the uint8 → float conversion makes violating it impossible).
+            Float arrays and tensors are still validated.
+
         Raises:
             ValueError: If ``shape`` cannot be unpacked as a two-element sequence,
                 if either dimension does not support the ``__index__`` protocol (e.g. ``float``) or is a ``bool``, if
@@ -1310,24 +1316,56 @@ class RFDETR:
                     img = requests.get(img, stream=True).raw
                 img = Image.open(img)
 
+            uint8_hwc = None
             if not isinstance(img, torch.Tensor):
-                if include_source_image:
-                    src = np.array(img)
-                    if src.dtype != np.uint8:
-                        src = (src * 255).clip(0, 255).astype(np.uint8)
-                    source_images.append(src)
-                img = F.to_tensor(img)
+                # Probe ndarrays in place (no copy); PIL images must be rasterized anyway.
+                arr = img if isinstance(img, np.ndarray) else np.array(img)
+                if arr.dtype == np.uint8 and arr.ndim in (2, 3):
+                    # uint8 fast path: ``to_tensor`` would divide by 255, so the result is
+                    # guaranteed to lie in [0, 1] and the range validation below can never
+                    # fire — skip it, keep the pixels uint8 (4x less host-to-device
+                    # traffic), and defer the HWC->CHW permute and / 255 scaling to the
+                    # inference device, where they are far cheaper than `to_tensor` on the
+                    # CPU at full source resolution.
+                    if arr is img:
+                        # Private C-contiguous copy: never alias caller memory, and keep
+                        # the device transfer a plain memcpy even for F-ordered or
+                        # negative-stride inputs.
+                        arr = np.array(arr, order="C")
+                    if include_source_image:
+                        source_images.append(arr)
+                    uint8_hwc = torch.from_numpy(arr if arr.ndim == 3 else arr[:, :, None])
+                    img = uint8_hwc.permute(2, 0, 1)  # CHW view for the shape checks below
+                else:
+                    if include_source_image:
+                        src = arr if arr.dtype == np.uint8 else (arr * 255).clip(0, 255).astype(np.uint8)
+                        source_images.append(src)
+                    img = F.to_tensor(img)
             elif include_source_image:
                 source_images.append((img.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
 
-            if (img > 1).any():
-                raise ValueError(
-                    "Image has pixel values above 1. Please ensure the image is normalized (scaled to [0, 1]).",
-                )
-            if (img < 0).any():
-                raise ValueError(
-                    "Image has pixel values below 0. Please ensure the image is normalized (scaled to [0, 1]).",
-                )
+            if uint8_hwc is None and img.numel() > 0:
+                # Single fused reduction; `(img > 1).any()` + `(img < 0).any()` cost four
+                # full passes over the image plus two bool-tensor materializations.
+                pixel_min, pixel_max = torch.aminmax(img)
+                pixel_min, pixel_max = pixel_min.item(), pixel_max.item()
+                if pixel_max != pixel_max:
+                    # NaN propagated through aminmax and would mask genuine range
+                    # violations; fall back to the elementwise checks, which match the
+                    # historical semantics exactly (NaN itself never raised).
+                    above_one = bool((img > 1).any())
+                    below_zero = bool((img < 0).any())
+                else:
+                    above_one = pixel_max > 1
+                    below_zero = pixel_min < 0
+                if above_one:
+                    raise ValueError(
+                        "Image has pixel values above 1. Please ensure the image is normalized (scaled to [0, 1]).",
+                    )
+                if below_zero:
+                    raise ValueError(
+                        "Image has pixel values below 0. Please ensure the image is normalized (scaled to [0, 1]).",
+                    )
             if img.shape[0] != self.model_config.num_channels:
                 raise ValueError(
                     "Invalid tensor image shape. Tensor inputs to `predict()` must be in (C, H, W) format "
@@ -1339,7 +1377,20 @@ class RFDETR:
             h, w = img_tensor.shape[1:]
             orig_sizes.append((h, w))
 
-            img_tensor = img_tensor.to(self.model.device)
+            if uint8_hwc is not None:
+                # Transfer the contiguous HWC bytes (a plain memcpy — permuting on the CPU
+                # first would force an expensive host-side transpose), then permute and
+                # scale on the device. Two parity constraints with `to_tensor`'s uint8
+                # branch: (1) it converts to `torch.get_default_dtype()`, not float32;
+                # (2) the divisor must be a tensor, not a Python scalar — CUDA's
+                # scalar-division kernel multiplies by the reciprocal, which rounds
+                # differently from CPU division for 126 of the 256 uint8 values (1 ulp).
+                # A tensor divisor uses true IEEE division, keeping this path
+                # bit-identical to the previous CPU preprocessing.
+                img_tensor = uint8_hwc.to(self.model.device).permute(2, 0, 1).to(torch.get_default_dtype())
+                img_tensor = img_tensor.div_(torch.tensor(255.0, dtype=img_tensor.dtype, device=img_tensor.device))
+            else:
+                img_tensor = img_tensor.to(self.model.device)
             resize_to = list(shape) if shape is not None else [self.model.resolution, self.model.resolution]
             img_tensor = F.resize(img_tensor, resize_to)
             img_tensor = F.normalize(img_tensor, self.means, self.stds)

@@ -122,6 +122,7 @@ class ModelConfig(BaseConfig):
     fused_optimizer: bool = True
     positional_encoding_size: int
     ia_bce_loss: bool = True
+    mal_loss: bool = False
     cls_loss_coef: float = 1.0
     segmentation_head: bool = False
     mask_downsample_ratio: int = 4
@@ -517,6 +518,35 @@ class RFDETRDinov3BaseConfig(ModelConfig):
     num_select: int = 300
 
 
+class RFDETRDinov3SmallConfig(ModelConfig):
+    """RF-DETR with a windowed DINOv3 ViT-S/16 backbone (size-matched A/B vs the DINOv2-small ``base``).
+
+    Identical detector config to :class:`RFDETRDinov3BaseConfig`, but a ViT-S DINOv3 encoder
+    (~21M-param backbone, matched to DINOv2-small) instead of ViT-B.  Lets a DINOv3-small vs
+    DINOv2-small comparison isolate backbone architecture / SSL quality from the ~3.7x backbone-size
+    gap of the ViT-B prototype.  ``pretrain_weights=None`` trains the detector from scratch on the
+    DINOv3 SSL backbone (``facebook/dinov3-vits16``, gated).
+    """
+
+    encoder: Literal["dinov3_windowed_small"] = "dinov3_windowed_small"
+    hidden_dim: int = 256
+    dec_layers: int = 4
+    sa_nheads: int = 8
+    ca_nheads: int = 16
+    dec_n_points: int = 2
+    num_windows: int = 2
+    patch_size: int = 16
+    projector_scale: List[Literal["P3", "P4", "P5"]] = ["P4"]
+    out_feature_indexes: List[int] = [3, 6, 9, 12]
+    num_classes: int = 90
+    # RoPE derives positions at runtime; this value is kept only for divisibility bookkeeping.
+    positional_encoding_size: int = 576 // 16
+    pretrain_weights: Optional[str] = None
+    resolution: int = 576  # divisible by patch_size * num_windows = 32
+    num_queries: int = 300
+    num_select: int = 300
+
+
 class RFDETRSegPreviewConfig(RFDETRBaseConfig):
     segmentation_head: bool = True
     out_feature_indexes: List[int] = [3, 6, 9, 12]
@@ -631,6 +661,8 @@ class TrainConfig(BaseModel):
 
     lr: float = 1e-4
     lr_encoder: float = 1.5e-4
+    optimizer: Literal["adamw", "muon"] = "adamw"
+    muon_momentum: float = 0.95
     batch_size: int | Literal["auto"] = 4
     grad_accum_steps: int = 4
     auto_batch_target_effective: int = 16  # per-device effective batch size target (before devices * num_nodes)

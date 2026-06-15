@@ -145,6 +145,8 @@ class SetCriterion(nn.Module):
         use_varifocal_loss=False,
         use_position_supervised_loss=False,
         ia_bce_loss=False,
+        mal_loss=False,
+        mal_gamma: float = 1.5,
         mask_point_sample_ratio: int = 16,
     ):
         """Create the criterion.
@@ -168,6 +170,8 @@ class SetCriterion(nn.Module):
         self.use_varifocal_loss = use_varifocal_loss
         self.use_position_supervised_loss = use_position_supervised_loss
         self.ia_bce_loss = ia_bce_loss
+        self.mal_loss = mal_loss
+        self.mal_gamma = mal_gamma
         self.mask_point_sample_ratio = mask_point_sample_ratio
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
@@ -179,7 +183,40 @@ class SetCriterion(nn.Module):
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
 
-        if self.ia_bce_loss:
+        if self.mal_loss:
+            # Matchability-Aware Loss (DEIM, arXiv:2412.04234). IoU-aware classification
+            # loss whose positive target is q**gamma (q = IoU of the matched pred/GT box)
+            # and whose negative weight is p**gamma. Unlike IA-BCE (target prob**a *
+            # iou**(1-a)) it uses q**gamma directly with no clamp; unlike Varifocal it
+            # drops the alpha class-balance term. Checked in first so the opt-in flag wins
+            # over the default ia_bce_loss=True.
+            gamma = self.mal_gamma
+            src_boxes = outputs["pred_boxes"][idx]
+            target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
+
+            iou_targets = torch.diag(
+                box_ops.box_iou(
+                    box_ops.box_cxcywh_to_xyxy(src_boxes.detach()),
+                    box_ops.box_cxcywh_to_xyxy(target_boxes),
+                )[0]
+            )
+            pos_ious = iou_targets.clone().detach()
+            prob = src_logits.sigmoid()
+            # negative weight p**gamma everywhere; overwritten at matched (query, class) pairs
+            pos_weights = torch.zeros_like(src_logits)
+            neg_weights = prob**gamma
+
+            pos_ind = [id for id in idx]
+            pos_ind.append(target_classes_o)
+
+            t = pos_ious.pow(gamma).detach()  # q**gamma positive target
+            pos_weights[tuple(pos_ind)] = t.to(pos_weights.dtype)
+            neg_weights[tuple(pos_ind)] = (1 - t).to(neg_weights.dtype)
+            # fused, numerically-stable BCE: -pos_weights*log(p) - neg_weights*log(1-p)
+            loss_ce = neg_weights * src_logits - F.logsigmoid(src_logits) * (pos_weights + neg_weights)
+            loss_ce = loss_ce.sum() / num_boxes
+
+        elif self.ia_bce_loss:
             alpha = self.focal_alpha
             gamma = 2
             src_boxes = outputs["pred_boxes"][idx]

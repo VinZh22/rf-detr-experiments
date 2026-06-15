@@ -19,6 +19,7 @@ __all__ = [
     "RFDETRMedium",
     "RFDETRLarge",
     "RFDETRDinov3Base",
+    "RFDETRDinov3Small",
     "RFDETRLargeDeprecated",
     "RFDETRSeg",
     "RFDETRSegPreview",
@@ -36,6 +37,7 @@ from rfdetr.config import (
     ModelConfig,
     RFDETRBaseConfig,
     RFDETRDinov3BaseConfig,
+    RFDETRDinov3SmallConfig,
     RFDETRLargeConfig,
     RFDETRLargeDeprecatedConfig,
     RFDETRMediumConfig,
@@ -187,6 +189,18 @@ class RFDETRDinov3Base(RFDETR):
 
     size = "rfdetr-dinov3-base"
     _model_config_class = RFDETRDinov3BaseConfig
+
+
+class RFDETRDinov3Small(RFDETR):
+    """Train an RF-DETR model with a windowed DINOv3 ViT-S/16 backbone (size-matched A/B vs ``base``).
+
+    Same detector config as :class:`RFDETRDinov3Base` but a ViT-S DINOv3 encoder, so DINOv3-small vs
+    DINOv2-small (``RFDETRBase`` from scratch) isolates backbone architecture/SSL from the ViT-B
+    size advantage.  Initializes from gated ``facebook/dinov3-vits16`` weights; heads from scratch.
+    """
+
+    size = "rfdetr-dinov3-small"
+    _model_config_class = RFDETRDinov3SmallConfig
 
 
 class RFDETRSeg(RFDETR):

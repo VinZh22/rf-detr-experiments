@@ -52,6 +52,7 @@ from rfdetr.inference import ModelContext
 from rfdetr.variants import (
     RFDETRBase,  # DEPRECATED # noqa: F401
     RFDETRDinov3Base,
+    RFDETRDinov3Small,
     RFDETRLarge,
     RFDETRLargeDeprecated,  # DEPRECATED # noqa: F401
     RFDETRMedium,
@@ -74,6 +75,7 @@ __all__ = [
     "RFDETRMedium",
     "RFDETRLarge",
     "RFDETRDinov3Base",
+    "RFDETRDinov3Small",
     "RFDETRSegNano",
     "RFDETRSegSmall",
     "RFDETRSegMedium",
