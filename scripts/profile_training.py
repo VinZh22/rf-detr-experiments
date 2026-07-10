@@ -52,6 +52,7 @@ MODEL_CHOICES = {
     "base": "RFDETRBase",
     "large": "RFDETRLarge",
     "dinov3-base": "RFDETRDinov3Base",
+    "dinov3-small": "RFDETRDinov3Small",
 }
 
 

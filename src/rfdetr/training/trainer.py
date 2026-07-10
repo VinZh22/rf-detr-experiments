@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - exercised in unit tests via monkeypatc
 from rfdetr.config import ModelConfig, TrainConfig
 from rfdetr.training.callbacks import (
     BestModelCallback,
+    CloseMosaicCallback,
     DropPathCallback,
     RFDETREarlyStopping,
     RFDETREMACallback,
@@ -204,6 +205,10 @@ def build_trainer(
     # Drop-path / dropout scheduling (vit_encoder_num_layers defaults to 12).
     if tc.drop_path > 0.0:
         callbacks.append(DropPathCallback(drop_path=tc.drop_path))
+
+    # DEIM Dense O2O: drive the "close mosaic" late-disable schedule from the epoch counter.
+    if getattr(tc, "dense_o2o", False):
+        callbacks.append(CloseMosaicCallback())
 
     # COCO mAP + F1 evaluation.
     callbacks.append(

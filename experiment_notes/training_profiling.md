@@ -338,7 +338,61 @@ training, 64-batch val subset — so all deltas are pure validation):
 
 ---
 
-## 8. Status
+## 8. Live utilization sweep — batch size, model size, and the util-vs-throughput gap
+
+A fresh `nvidia-smi`-sampled sweep (median GPU util over the steady-state window, sampled every 0.5 s
+while the real profiler runs 80 train steps, val off) on an idle GPU. This adds two things the §6 sweep
+didn't isolate: a **small model** (`dinov3-small`, 32.9 M) and a **bigger batch** (32), plus wall-clock
+step time alongside utilization so the two can be compared directly.
+
+Both runs sampled live on an idle GPU 1, 80 train steps, val off, EMA off. Each config got its own
+output dir so all three wall-clock step times are captured in one session (`run_training_batch` mean from
+the PTL `SimpleProfiler`).
+
+### 8.1 `dinov3-small` (32.9 M), bs=32
+
+| config | GPU util (median) | util p90 | wall step | matcher GPU region | peak mem |
+|---|---:|---:|---:|---:|---:|
+| `scipy` (original) | **5%** | 78% | 2.14 s | 1779 ms (idle stall) | 44 GB |
+| `scipy` + Tier-1 | 30% | 95% | 1.54 s | 1208 ms | 44 GB |
+| **`cuda_lap`** | **92%** | 98% | **0.78 s** | 441 ms (real GPU work) | 44 GB |
+
+### 8.2 `dinov3-base` (97 M), bs=32
+
+| config | GPU util (median) | util p90 | wall step | matcher GPU region | peak mem |
+|---|---:|---:|---:|---:|---:|
+| `scipy` (original) | **5.5%** | 92% | 2.23 s | 1789 ms (idle stall) | 54 GB |
+| `scipy` + Tier-1 | 27.5% | 98% | 1.60 s | 1175 ms | 55 GB |
+| **`cuda_lap`** | **93%** | 98% | **0.82 s** | 426 ms (real GPU work) | 53 GB |
+
+### 8.3 What this says
+
+- **`cuda_lap` is a ~2.7× step speedup at bs=32 for *both* model sizes** (small 2.14→0.78 s, base
+  2.23→0.82 s) and takes utilization from ~5% (GPU sitting *kernel-less* during the CPU matcher) to
+  **~92–93%**. Here util and throughput **agree** — the GPU is genuinely busy *and* the step is far
+  faster. Tier-1 alone is the intermediate point (~−28%).
+- **The matcher is still the single largest GPU consumer — relocated, not removed.** In the `cuda_lap`
+  forward, the matcher is **441 ms of the 548 ms top-level region** (small) — i.e. the exact assignment
+  dwarfs the actual detection compute (backbone 30 ms + transformer 38 ms). It's ~55% of the whole
+  ~0.8 s step. So "93% util" is real, but roughly *half* of that busy time is the (exact, necessary)
+  assignment, not convnet/transformer math. To go faster still, the next lever is the matcher itself
+  (or `group_detr`), not the backbone.
+- **Model size barely matters at this batch** because the matcher cost is model-independent (same
+  dataset/batch → same assignment problem; 441 vs 426 ms) and dominates. The 97 M base costs almost the
+  same per step as the 33 M small (0.82 vs 0.78 s) — the extra backbone compute is small next to the
+  matcher.
+- **bs=32 fits comfortably** (44 GB small, 54 GB base of 143 GB), so there's headroom for larger batches.
+
+> **Correction to an earlier reading:** a first pass reported the small model at only ~8% faster with
+> `cuda_lap` (2.05 s). That was a contaminated measurement (three configs sharing one overwritten output
+> dir across separate invocations) — a *smaller* model cannot be slower than base at the same matcher
+> cost. The clean single-session sweep above (per-config dirs) shows the expected ~2.7×, and the GPU-time
+> budget now reconciles with wall-clock (fwd 548 + bwd ~122 ≈ 670 ms of GPU work in a 780 ms step ≈ the
+> measured 92% util).
+
+---
+
+## 9. Status
 
 - [x] Profiler added: [`scripts/profile_training.py`](../scripts/profile_training.py)
 - [x] Tier 1 (finiteness check on GPU) — implemented, opt-in, tested, **−13% step**

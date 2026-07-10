@@ -1,58 +1,44 @@
-# RF-DETR - Agent Instructions
+# RF-DETR Experiments - Agent Instructions
 
-This file provides detailed technical context for AI coding agents working with RF-DETR.
+This repository is **not** the upstream RF-DETR project and is **not** aimed at contributing back to it. It is a research fork whose goal is to build a **new detection model that uses RF-DETR as its foundation** — swapping components (backbone, matcher, loss, optimizer, training recipe), measuring what each change buys, and keeping what wins.
 
-**Canonical Sources:**
+There is no PR review process, no maintainer sign-off, no CI matrix to satisfy, and no user-facing documentation to maintain. The deliverables are working code and **written-up, reproducible experiments**.
 
-- **Contribution Guidelines:** [CONTRIBUTING.md](.github/CONTRIBUTING.md) - The authoritative source for all contribution practices
-- **Human Documentation:** [README.md](README.md) - Project overview and usage
-- **Copilot Instructions:** [.github/copilot-instructions.md](.github/copilot-instructions.md) - GitHub Copilot-specific guidance
+**Where things live:**
 
-This document supplements the contribution guidelines with detailed technical information for automated tooling.
+- **Experiment write-ups:** [experiment_notes/](experiment_notes/) — start with its [README.md](experiment_notes/README.md) for the thread connecting all experiments and key results
+- **Experiment scripts:** [scripts/](scripts/) — profiling, A/B runners, training entry points
+- **Source (the fork):** [src/rfdetr/](src/rfdetr/)
+- **Model configs:** [configs/](configs/)
+- **Training outputs:** [runs/](runs/) (gitignored artifacts)
 
 ## Agent Responsibilities
 
-As an AI agent contributing to RF-DETR, you are responsible for:
+As an AI agent working in this repo, you are responsible for:
 
-1. **Following test-driven development practices**
+1. **Treating experiments as first-class output**
 
-    - Write failing tests first for bug fixes
-    - Write comprehensive tests for new features
-    - Ensure final PR commit has all tests passing
+    - Every substantive experiment (profiling, A/B, ablation) gets a write-up in `experiment_notes/`, written course-note style: build up the concept, then the implementation, then the *measured* result, ending with a **Reproduce** section
+    - Update `experiment_notes/README.md` (the index and "key results at a glance") when adding or materially updating a note
+    - Report numbers honestly — negative and null results are results; record them (see the Muon note for the pattern)
+    - Convergence-affecting changes need an A/B against the current baseline, not vibes
 
-2. **Adhering to code quality standards**
+2. **Keeping the fork runnable**
 
-    - Run `pre-commit run --all-files` before every commit
-    - Follow type hint and docstring requirements
-    - Prefer direct project imports; conventional third-party aliases are allowed
+    - The existing test suite is a regression safety net, not a TDD mandate — run the relevant tests after touching shared code paths (`src/rfdetr/`), and add tests where a component's correctness is subtle (e.g. the matcher's SciPy-equivalence tests)
+    - Experiment scripts in `scripts/` can be looser, but must actually run from the repo root after `uv sync --all-groups`
 
-3. **Maintaining agentic documentation**
+3. **Preserving comparability**
 
-    - Update `AGENTS.md` when architecture patterns or technical conventions change
-    - Update `.github/copilot-instructions.md` when high-level guidance changes
-    - Update `.github/CONTRIBUTING.md` when human workflow is affected
-    - Apply updates after receiving major feedback in PR reviews
+    - Don't silently change defaults that prior experiments depended on — if a baseline shifts, say so in the relevant note
+    - New training features should be opt-in (config flag or callback) so old configs keep meaning what they meant
 
-4. **Consulting maintainers before major changes**
+4. **Writing minimal, focused code**
 
-    - Open an issue before adding new models or significant features
-    - Wait for approval on approach before implementing
-
-5. **Writing secure, minimal code**
-
-    - Avoid over-engineering and unnecessary abstractions
-    - Write secure code (prevent injection vulnerabilities)
-    - Follow existing patterns in the codebase
-
-> [!NOTE]
-> Keeping documentation current ensures consistency across agent contributions and reduces repeated feedback on the same issues.
+    - Follow existing patterns in the codebase; avoid over-engineering and unnecessary abstractions
+    - Prefer surgical changes to RF-DETR internals over parallel re-implementations
 
 ## Build & Development Environment
-
-> [!NOTE]
-> **Canonical Reference:** See [Development Environment Setup](.github/CONTRIBUTING.md#development-environment-setup) in CONTRIBUTING.md for complete setup instructions.
-
-### Setup
 
 ```bash
 # Install uv (if not already installed)
@@ -62,86 +48,51 @@ pip install uv
 uv sync --all-groups
 ```
 
-**Prerequisites:** Python >=3.10 (tested on 3.10-3.13)
+**Prerequisites:** Python >=3.10
 
-### Dependency Information
+**Dependency information:** see `pyproject.toml`.
 
-See `pyproject.toml` for complete dependency specifications:
-
-- **Core:** PyTorch, torchvision, transformers, supervision, pydantic, pyDeprecate
-- **Optional:** `[train]` (training, including peft and pycocotools), `[lora]` (LoRA fine-tuning), `[plus]` (Plus models), `[onnx]` (ONNX export), `[loggers]` (tensorboard, wandb, mlflow, clearml)
-- **Development:** `tests`, `docs`, `build` groups
-
-**Important version constraints:**
-
-- PyTorch: >=2.2.0, \<3.0.0
-- Transformers: >=5.0.0, \<6.0.0
+- **Core:** PyTorch, torchvision, transformers, supervision, pydantic
+- **Optional extras:** `[train]`, `[lora]`, `[onnx]`, `[loggers]` (tensorboard, wandb, mlflow, clearml)
+- **Version constraints:** PyTorch >=2.2.0,\<3.0.0; Transformers >=5.0.0,\<6.0.0
 
 ## Testing
 
-> [!NOTE]
-> **Canonical Reference:** See [Test-Driven Development](.github/CONTRIBUTING.md#test-driven-development) in CONTRIBUTING.md for complete guidelines.
->
-> **CI Workflows (Source of Truth):** See `.github/workflows/ci-tests-cpu.yml` and `.github/workflows/ci-tests-gpu.yml` for exact test commands used in CI.
-
-### Commands
-
 ```bash
-# CPU tests (default for local development; mirrors CI)
-uv run --no-sync pytest src/ tests/ -n 1 -m "not gpu" --ignore=tests/try_instantiate_all_models.py --cov=rfdetr --cov-report=xml --timeout=240 --durations=50
+# CPU tests
+uv run --no-sync pytest src/ tests/ -n 2 -m "not gpu" --ignore=tests/try_instantiate_all_models.py --timeout=240 --durations=50
 
-# GPU tests (requires GPU; mirrors CI)
-uv run --no-sync pytest tests/ -m gpu -n 2 --reruns 1 --only-rerun "OutOfMemoryError" --cov=rfdetr --cov-report=xml --timeout=600 --durations=20
+# GPU tests (requires GPU)
+uv run --no-sync pytest tests/ -m gpu -n 2 --reruns 1 --only-rerun "OutOfMemoryError" --timeout=600 --durations=20
 
-# Pre-commit checks (ALWAYS run before committing)
+# Lint/format (run before committing)
 pre-commit run --all-files
 ```
 
-### Testing Principles
+**Testing principles for a research fork:**
 
-> [!IMPORTANT]
-> **Testing Requirements:**
->
-> - ⚠️ **During development:** Tests may fail as you work through TDD cycle
-> - ✅ **Before opening PR:** Final commit MUST have all tests passing
-> - ✅ **Before each commit:** Run `pre-commit run --all-files`
+- Tests exist to catch regressions in shared machinery (datasets, matcher, losses, model wiring), not to gate every experiment
+- When a change is *correctness-critical* (e.g. an exact solver replacing SciPy), write equivalence tests against the reference implementation
+- Mark GPU/heavy tests with `@pytest.mark.gpu`; use `@pytest.mark.parametrize` with `pytest.param(..., id="name")`
+- It's fine for `tests/` to lag behind experimental features — it is not fine for a merged-to-branch change to break existing tests silently
 
-**Test-Driven Development:**
+## Running Experiments
 
-1. **Bug fixes:** Write failing test → Fix code → Verify all tests pass
-2. **New features:** Write comprehensive tests → Implement feature → Refactor
+- **Training entry point:** `scripts/train_rfdetr_dataset.py` (YOLO/COCO datasets under `datasets/`)
+- **Profiling:** `scripts/profile_training.py`, `scripts/profile_inference.py`
+- **A/B runners:** e.g. `scripts/dense_o2o_ab.sh`, `scripts/matcher_map_ab.py` — follow their pattern (fixed seeds, size-matched arms, same schedule) for new A/Bs
+- **Long runs:** use `scripts/run_detached.sh`; outputs land in `runs/`
+- All commands in write-ups assume execution from the **repo root**
 
-**Test Organization:**
-
-- Group related tests in classes
-- Use `@pytest.mark.parametrize` with `pytest.param(..., id="name")`
-- Mark GPU/heavy tests with `@pytest.mark.gpu`
-- Avoid multiple validation cases in a single test - see [CONTRIBUTING.md](.github/CONTRIBUTING.md#avoid-multiple-validation-cases-in-a-single-test) for details
-
-**CI Information:**
-See [CI Testing](.github/CONTRIBUTING.md#ci-testing) in CONTRIBUTING.md for details on OS/Python version matrix and workflow configurations.
-
-## Code Quality & Linting
-
-> [!NOTE]
-> **Canonical Reference:** See [Code Quality and Linting](.github/CONTRIBUTING.md#code-quality-and-linting) in CONTRIBUTING.md for setup and details.
-
-### Command
+## Code Quality
 
 ```bash
-# Always run full pre-commit (not individual tools)
 pre-commit run --all-files
 ```
 
-> [!TIP]
-> Pre-commit hooks will auto-format many issues. Review changes and re-stage files.
+Configuration: `.pre-commit-config.yaml` (ruff, mdformat, prettier, codespell, license headers) and `pyproject.toml` (`[tool.ruff]`).
 
-**Configuration Files:**
-
-- `.pre-commit-config.yaml` - Pre-commit hooks (ruff, mdformat, prettier, codespell, license headers)
-- `pyproject.toml` - Ruff linting rules (`[tool.ruff]` section)
-
-**License Header (required for all Python files):**
+**License header** — this fork derives from Apache-2.0 RF-DETR; keep the header on Python files under `src/` (the pre-commit hook enforces it):
 
 ```python
 # ------------------------------------------------------------------------
@@ -150,56 +101,6 @@ pre-commit run --all-files
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 ```
-
-## Documentation
-
-### Building Docs
-
-```bash
-# Full install (matches CI — required for XLarge/2XLarge model pages)
-uv pip install -e ".[plus]" --group docs
-
-# Serve locally (live reload)
-uv run mkdocs serve
-
-# Build static site
-uv run mkdocs build
-```
-
-**Documentation Structure:**
-
-- **Source:** `docs/` directory (Markdown)
-- **Config:** `mkdocs.yaml` (uses custom YAML tags: `!!python/name`)
-- **Deployment:** GitHub Actions publishes to GitHub Pages
-
-**Note:** `mkdocs.yaml` is checked by the `check-yaml` pre-commit hook with `--unsafe` so custom YAML tags such as `!!python/name` are accepted.
-
-## Package Building
-
-```bash
-# Install build dependencies
-uv sync --group build
-
-# Build distributions
-uv build
-
-# Validate build
-uv run twine check --strict dist/*
-```
-
-**Build outputs:**
-
-- Source distribution: `dist/rfdetr-*.tar.gz`
-- Wheel: `dist/rfdetr-*.whl`
-
-## Project Structure
-
-> [!NOTE]
-> **Canonical Reference:** See [Project Structure](.github/CONTRIBUTING.md#project-structure) in CONTRIBUTING.md for complete project organization, directory descriptions, and configuration files.
->
-> **Quick summary:** `src/rfdetr/` (source code), `tests/` (test suite), `docs/` (documentation), `.github/` (CI/CD), `pyproject.toml` (dependencies and config).
->
-> Internal package organization within `src/rfdetr/` is subject to change as this is an active research and development project.
 
 ## Architecture & Conventions
 
@@ -226,11 +127,14 @@ logger = get_logger()  # Default name: "rf-detr", reads LOG_LEVEL env var
 from tqdm.auto import tqdm  # NOT: from tqdm import tqdm
 ```
 
-**Plus Models (XLarge, 2XLarge):**
+**Logging:**
 
-- Requires separate `rfdetr_plus` package (PML 1.0 license)
-- Import handled lazily via `__getattr__` in `src/rfdetr/platform/models.py`
-- Raises `ImportError` if package not installed
+- Use `logger.debug()` for detailed tensor/shape information (not `logger.info()`)
+- Use `logger.info()` for high-level progress/status
+
+**Checkpoint Handling:**
+
+- Always check file existence before operations — training runs get interrupted
 
 **Subprocess Usage:**
 
@@ -243,84 +147,30 @@ result = subprocess.run(
     text=True,  # Return stdout/stderr as strings
     capture_output=True,
 )
-# Note: stderr is already a string, don't decode
 ```
-
-**Logging:**
-
-- Use `logger.debug()` for detailed tensor/shape information (not `logger.info()`)
-- Use `logger.info()` for high-level progress/status
-
-**Checkpoint Handling:**
-
-- Always check file existence before operations
-- Prevents errors when training is interrupted
 
 ### Type Hints & Docstrings
 
-> [!IMPORTANT]
-> **Canonical Reference:** See [Google-Style Docstrings and Mandatory Type Hints](.github/CONTRIBUTING.md#google-style-docstrings-and-mandatory-type-hints) in CONTRIBUTING.md for complete requirements and examples.
-
-**Requirements:**
-
-- MANDATORY type hints for all function parameters and return types
-- MANDATORY Google-style docstrings for all functions and classes
-- **Do not duplicate types in docstrings** - types are in the function signature
+- Type hints on all function parameters and return types in `src/rfdetr/`
+- Google-style docstrings for public functions and classes; don't duplicate types in docstrings
 - Target Python version: 3.10+
+- Throwaway experiment scripts can be pragmatic, but anything imported by `src/rfdetr/` follows the full standard
 
-## Common Workflows
-
-### Making Changes
+## Common Workflow
 
 1. **Setup:** `uv sync --all-groups`
-2. **Before changes:** Run tests to establish baseline
-3. **Development:**
-    - Make minimal, focused changes
-    - Follow existing patterns and conventions
-    - Add type hints and docstrings
-4. **Testing:**
-    - Bug fixes: Write test first, then fix
-    - Features: Test all major use cases
-    - Run: `uv run --no-sync pytest src/ tests/ -n 2 -m "not gpu" --ignore=tests/try_instantiate_all_models.py --timeout=240 --durations=50`
+2. **Before changes:** run the relevant tests to establish a baseline; skim related notes in `experiment_notes/` so you don't redo or contradict prior work
+3. **Development:** minimal, focused changes following existing patterns; new training behavior behind an opt-in flag/callback
+4. **Validation:** correctness tests for subtle components; an A/B or profile for anything claiming a speed/quality win
 5. **Quality checks:** `pre-commit run --all-files`
-6. **Build (if needed):** `uv build`
-7. **Commit:** Pre-commit hooks run automatically
+6. **Write-up:** add/update the `experiment_notes/` document with measured results and a Reproduce section; update the notes index
+7. **Commit** to the working branch — no PR ceremony required
 
-### Adding New Model Variants
+## Security Considerations
 
-> [!IMPORTANT]
-> **Canonical Reference:** See [Adding a New Model](.github/CONTRIBUTING.md#adding-a-new-model) in CONTRIBUTING.md for detailed guidance.
->
-> Always consult maintainers before implementing new models.
-
-### Security Considerations
-
-- **Write secure code:** Avoid injection vulnerabilities (XSS, SQL injection, command injection)
-- **Validate inputs:** Especially for file paths, URLs, and user-provided data
-- **No credentials:** Never commit API keys, tokens, or credentials
-- **Follow OWASP best practices**
-
-## CI/CD Workflows
-
-GitHub Actions workflows in `.github/workflows/`:
-
-- **ci-tests-cpu.yml:** CPU tests across OS/Python versions
-- **ci-tests-gpu.yml:** GPU-dependent tests
-- **build-package.yml:** Build and validate distributions
-- **ci-build-docs.yml:** Documentation builds
-- **publish-docs.yml:** Deploy docs to GitHub Pages
-
-**Concurrency:** PRs cancel in-progress runs on new pushes
-
-## Additional Resources
-
-- **Documentation:** https://rfdetr.roboflow.com
-- **Repository:** https://github.com/roboflow/rf-detr
-- **Issues:** https://github.com/roboflow/rf-detr/issues
-- **Discord:** https://discord.gg/GbfgXGJ8Bk
-- **Contributing:** `.github/CONTRIBUTING.md`
-- **Copilot Instructions:** `.github/copilot-instructions.md`
+- Validate inputs, especially file paths, URLs, and dataset-provided data
+- Never commit API keys, tokens, or credentials (wandb/mlflow keys live in the environment)
 
 ---
 
-**Note:** This file is designed for AI coding agents. For human-readable project information, see README.md. For contribution guidelines, see CONTRIBUTING.md.
+**Note:** This file is for AI coding agents. Upstream RF-DETR docs (https://rfdetr.roboflow.com, https://github.com/roboflow/rf-detr) remain useful as reference for the base architecture, but their contribution process does not apply here.

@@ -691,6 +691,12 @@ class TrainConfig(BaseModel):
     multi_scale: bool = True
     expanded_scales: bool = True
     do_random_resize_via_padding: bool = False
+    # DEIM-style Dense O2O augmentation (mosaic + mixup) on the train split. Densifies positive
+    # supervision on the data side (more targets/image), an alternative to Group DETR's query groups.
+    dense_o2o: bool = False
+    mosaic_prob: float = 0.5
+    mixup_prob: float = 0.5
+    close_mosaic_epochs: int = 5  # trailing epochs with mosaic/mixup disabled (fine-tune on clean images)
     use_ema: bool = True
     ema_update_interval: int = 1
     num_workers: int = 2

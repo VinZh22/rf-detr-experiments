@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,7 @@ from rfdetr.datasets.coco import (
     make_coco_transforms,
     make_coco_transforms_square_div_64,
 )
+from rfdetr.datasets.dense_o2o import DenseO2O
 
 REQUIRED_YOLO_YAML_FILES = ["data.yaml", "data.yml"]
 REQUIRED_SPLIT_DIRS = ["train", "valid"]
@@ -614,10 +616,13 @@ class YoloDetection(VisionDataset):
         data_file: str,
         transforms=None,
         include_masks: bool = False,
+        dense_o2o: DenseO2O | None = None,
     ):
         super(YoloDetection, self).__init__(img_folder)
         self._transforms = transforms
         self.include_masks = include_masks
+        # DEIM-style Dense O2O augmentor (mosaic/mixup), applied pre-transform; None disables it.
+        self._dense_o2o = dense_o2o
         self.prepare = ConvertYolo(include_masks=include_masks)
 
         if include_masks:
@@ -634,7 +639,18 @@ class YoloDetection(VisionDataset):
     def __len__(self) -> int:
         return len(self.sv_dataset)
 
-    def __getitem__(self, idx: int):
+    def _load_raw(self, idx: int) -> tuple:
+        """Load and convert one sample to ``(PIL image, target)`` without applying transforms.
+
+        Splitting this out lets Dense O2O draw extra raw samples (for mosaic/mixup) before the
+        resize/normalize transform stack runs, where boxes are still absolute ``xyxy``.
+
+        Args:
+            idx: Dataset index.
+
+        Returns:
+            A ``(image, target)`` pair in RF-DETR format (post-:class:`ConvertYolo`, pre-transform).
+        """
         image_id = self.ids[idx]
         image_path, cv2_image, detections = self.sv_dataset[idx]
 
@@ -643,7 +659,17 @@ class YoloDetection(VisionDataset):
         img = Image.fromarray(rgb_image)
 
         target = {"image_id": image_id, "detections": detections}
-        img, target = self.prepare(img, target)
+        return self.prepare(img, target)
+
+    def _draw_raw(self) -> tuple:
+        """Return a randomly indexed raw ``(image, target)`` pair for mosaic/mixup composition."""
+        return self._load_raw(random.randrange(len(self.sv_dataset)))
+
+    def __getitem__(self, idx: int):
+        img, target = self._load_raw(idx)
+
+        if self._dense_o2o is not None:
+            img, target = self._dense_o2o(img, target, self._draw_raw)
 
         if self._transforms is not None:
             img, target = self._transforms(img, target)
@@ -664,7 +690,9 @@ def build_roboflow_from_yolo(image_set: str, args: Any, resolution: int) -> Yolo
             ``dataset_dir``, ``square_resize_div_64``, ``aug_config``, ``segmentation_head``, ``multi_scale``,
             ``expanded_scales``, ``do_random_resize_via_padding``, ``patch_size``, ``num_windows``. ``aug_config`` is
             forwarded to the transform builder; when ``None`` the builder falls back to the default
-            :data:`~rfdetr.datasets.aug_config.AUG_CONFIG`.
+            :data:`~rfdetr.datasets.aug_config.AUG_CONFIG`. When ``dense_o2o`` is truthy, the DEIM-style
+            mosaic/mixup augmentor is attached to the train split (also reads ``epochs``,
+            ``close_mosaic_epochs``, ``mosaic_prob``, ``mixup_prob``).
         resolution: Target square resolution in pixels.
 
     Returns:
@@ -694,6 +722,19 @@ def build_roboflow_from_yolo(image_set: str, args: Any, resolution: int) -> Yolo
     resolved_augmentation_backend = _resolve_runtime_augmentation_backend(getattr(args, "augmentation_backend", "cpu"))
     gpu_postprocess = resolved_augmentation_backend != "cpu"
 
+    # DEIM-style Dense O2O (mosaic + mixup): train split only, detection only (no mask tiling). Mosaic
+    # tiles are sized to the train resolution so the 2*tile canvas is resized back to `resolution` by
+    # the transform stack — net effect is ~4-8x more targets per image at the model's input size.
+    dense_o2o = None
+    if getattr(args, "dense_o2o", False) and image_set.split("_")[0] == "train" and not include_masks:
+        dense_o2o = DenseO2O(
+            tile=resolution,
+            total_epochs=getattr(args, "epochs", 100),
+            close_mosaic_epochs=getattr(args, "close_mosaic_epochs", 5),
+            mosaic_prob=getattr(args, "mosaic_prob", 0.5),
+            mixup_prob=getattr(args, "mixup_prob", 0.5),
+        )
+
     if square_resize_div_64:
         dataset = YoloDetection(
             img_folder=str(img_folder),
@@ -711,6 +752,7 @@ def build_roboflow_from_yolo(image_set: str, args: Any, resolution: int) -> Yolo
                 gpu_postprocess=gpu_postprocess,
             ),
             include_masks=include_masks,
+            dense_o2o=dense_o2o,
         )
     else:
         dataset = YoloDetection(
@@ -729,5 +771,6 @@ def build_roboflow_from_yolo(image_set: str, args: Any, resolution: int) -> Yolo
                 gpu_postprocess=gpu_postprocess,
             ),
             include_masks=include_masks,
+            dense_o2o=dense_o2o,
         )
     return dataset

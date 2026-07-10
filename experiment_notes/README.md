@@ -17,6 +17,7 @@ root** after `uv sync --all-groups`.
 | understand the Muon optimizer and how it compared to AdamW here | [muon_optimizer.md](muon_optimizer.md) |
 | make inference faster (CPU preprocessing is the real cost) | [inference_profiling.md](inference_profiling.md) |
 | see whether DEIM's ideas (MAL, Dense O2O) fit RF-DETR | [deim_rfdetr_review.md](deim_rfdetr_review.md) |
+| see whether DEIM's **Dense O2O** can replace **Group DETR** | [denseo2o_vs_groupdetr_ab.md](denseo2o_vs_groupdetr_ab.md) |
 
 ## The thread connecting them
 
@@ -37,7 +38,9 @@ root** after `uv sync --all-groups`.
 5. Separately, **inference profiling** ([inference_profiling.md](inference_profiling.md)) showed
    `predict()` is ~75–80% CPU preprocessing, not model forward — a 5–11× win by moving preprocessing to
    the GPU.
-6. [deim_rfdetr_review.md](deim_rfdetr_review.md) is the feasibility study that led to adding the MAL loss.
+6. [deim_rfdetr_review.md](deim_rfdetr_review.md) is the feasibility study that led to adding the MAL loss;
+   [denseo2o_vs_groupdetr_ab.md](denseo2o_vs_groupdetr_ab.md) then implemented DEIM's **Dense O2O**
+   (mosaic+mixup) and A/B'd it as a *replacement* for Group DETR (crossed with the loss).
 
 ## Key results at a glance
 
@@ -47,7 +50,13 @@ root** after `uv sync --all-groups`.
   makes the step GPU-bound (83% util). Convergence-safe by construction (bit-identical to SciPy).
 - **Backbone (DINOv2 vs DINOv3):** size-matched DINOv3-S beats DINOv2-S by **+0.107 mAP**; the 3.7× jump
   to DINOv3-B adds only +0.020 → DINOv3's advantage is ~84% backbone SSL/architecture, ~16% size.
-- **Loss:** MAL beats IA-BCE by a steady ~+0.01 mAP.
+- **Loss:** MAL beats IA-BCE by a steady ~+0.01 mAP (holds under both Group DETR and Dense O2O).
+- **Dense O2O vs Group DETR:** budget-dependent. At **20ep** Group DETR (g=13) beats Dense O2O
+  (mosaic+mixup, g=1) by ~0.01–0.02. At **40ep the ranking flips for the MAL pairing**: Dense O2O+MAL
+  **0.351** is the best arm, edging Group DETR (0.343) — but Dense O2O+IA-BCE (0.334) is the *worst*, so
+  Dense O2O's win hinges entirely on MAL (+0.017) handling the low-quality matches mosaic creates. Group
+  DETR converges much faster (use it for short budgets); Dense O2O+MAL has the higher ceiling given a
+  long schedule + close-mosaic fine-tune.
 - **Optimizer:** drop-in Muon trails *tuned* AdamW by ~0.010 mAP on this small detector — expected
   outside Muon's large-scale-pretraining sweet spot, and Muon was not equally tuned.
 - **Inference:** GPU-side preprocessing + jit-trace → up to **11×** faster `predict()`; fp16/bf16/autocast

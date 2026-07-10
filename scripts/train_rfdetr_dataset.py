@@ -200,6 +200,29 @@ def main() -> None:
     )
     parser.add_argument("--mal-loss", action="store_true", help="use DEIM's Matchability-Aware Loss instead of IA-BCE")
     parser.add_argument(
+        "--group-detr",
+        type=int,
+        default=None,
+        help="number of Group DETR query groups (variant default if unset; set 1 to disable Group DETR, "
+        "e.g. when relying on Dense O2O instead). Only safe with --from-scratch.",
+    )
+    parser.add_argument(
+        "--dense-o2o",
+        action="store_true",
+        help="enable DEIM Dense O2O (mosaic+mixup) augmentation on the train split: densifies positive "
+        "supervision on the data side instead of via Group DETR query groups",
+    )
+    parser.add_argument("--mosaic-prob", type=float, default=0.5, help="per-sample mosaic probability (Dense O2O)")
+    parser.add_argument(
+        "--mixup-prob", type=float, default=0.5, help="mixup probability given mosaic fired (Dense O2O)"
+    )
+    parser.add_argument(
+        "--close-mosaic-epochs",
+        type=int,
+        default=5,
+        help="trailing epochs with mosaic/mixup disabled so the model fine-tunes on clean images",
+    )
+    parser.add_argument(
         "--optimizer",
         choices=["adamw", "muon"],
         default="adamw",
@@ -251,6 +274,10 @@ def main() -> None:
     )
     if args.resolution is not None:
         init_kwargs["resolution"] = args.resolution
+    if args.group_detr is not None:
+        # group_detr is an architecture field; changing it from the variant default is only
+        # weight-compatible when training the head from scratch (no released checkpoint to load).
+        init_kwargs["group_detr"] = args.group_detr
     if args.from_scratch:
         # pretrain_weights=None skips the released RF-DETR detector checkpoint and trains the detector
         # head from random init on top of the variant's self-supervised backbone (DINOv2/DINOv3).
@@ -259,10 +286,13 @@ def main() -> None:
         init_kwargs["pretrain_weights"] = None
     model = model_cls(**init_kwargs)
 
+    group_detr = args.group_detr if args.group_detr is not None else "variant-default"
+    matching = f"DenseO2O(mosaic={args.mosaic_prob},mixup={args.mixup_prob})" if args.dense_o2o else "none"
     print(
         f"Training {args.model} ({MODEL_CHOICES[args.model]}) on {num_classes} classes | "
-        f"loss={'MAL' if args.mal_loss else 'IA-BCE'} | epochs={args.epochs} | bs={args.batch_size} | "
-        f"workers={args.num_workers} | multi_scale={args.multi_scale} | ema={args.use_ema}",
+        f"loss={'MAL' if args.mal_loss else 'IA-BCE'} | group_detr={group_detr} | dense_o2o={matching} | "
+        f"epochs={args.epochs} | bs={args.batch_size} | workers={args.num_workers} | "
+        f"multi_scale={args.multi_scale} | ema={args.use_ema}",
         flush=True,
     )
     model.train(
@@ -283,6 +313,10 @@ def main() -> None:
         eval_interval=args.eval_interval,
         compute_val_loss=args.compute_val_loss,
         augmentation_backend=args.aug_backend,
+        dense_o2o=args.dense_o2o,
+        mosaic_prob=args.mosaic_prob,
+        mixup_prob=args.mixup_prob,
+        close_mosaic_epochs=args.close_mosaic_epochs,
         tensorboard=args.tensorboard,
         checkpoint_interval=args.checkpoint_interval,
         resume=args.resume,
